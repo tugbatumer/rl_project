@@ -14,13 +14,14 @@ import matplotlib.pyplot as plt
 from itertools import count
 import math 
 
+'''
 episode_durations = []
 
 is_ipython = 'inline' in matplotlib.get_backend()
 if is_ipython:
     from IPython import display
 
-plt.ion()
+# plt.ion()
 
 def plot_durations(show_result=False):
     plt.figure(1)
@@ -47,27 +48,12 @@ def plot_durations(show_result=False):
         else:
             display.display(plt.gcf())
 
+'''
 
-# Hyperparameters
-LR = 1e-4
-GAMMA = 0.99
-TAU = 0.005
-BATCH_SIZE = 128
-EPS_START = 0.9
-EPS_END = 0.05
-EPS_DECAY = 1000
-REPLAY_SIZE = int(1e6)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(device)
 
-env = gym.make("CartPole-v1")
 
-n_actions = env.action_space.n
-
-state, info = env.reset()
-n_observations = len(state)
-steps_done = 0
 
 
 class ReplayBuffer:
@@ -98,8 +84,6 @@ class ReplayBuffer:
                 np.stack(next_states),
                 np.stack(dones).astype(np.float32))
 
-
-
 class QNetwork(nn.Module):
     def __init__(self, state_size, action_size, hl1, hl2):
         super(QNetwork, self).__init__()
@@ -118,33 +102,101 @@ class QNetwork(nn.Module):
         return x
 
 
-class DQNAgent:
-    def __init__(self, env):
+class DQNAGENT:
+    def __init__(self, env, N_episode, LR, hidden1, hidden2, GAMMA, TAU, BATCH_SIZE, EPS_START, EPS_END, EPS_DECAY, REPLAY_SIZE):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        self.LR = LR
+        self.steps_done = 0
+        self.REPLAY_SIZE = REPLAY_SIZE
+        self.EPS_DECAY = EPS_DECAY
+        self.EPS_END = EPS_END
+        self.EPS_START = EPS_START
+        self.BATCH_SIZE = BATCH_SIZE
+        self.TAU = TAU
+        self.GAMMA = GAMMA
         self.env = env 
         self.state_dim = env.observation_space.shape[0]
         self.action_dim = env.action_space.n
         # self.max_action = float(env.action_space.high[0])
 
-        self.Q_network = QNetwork(self.state_dim, self.action_dim, 128, 128).to(device)
-        self.Q_target = QNetwork(self.state_dim, self.action_dim, 128, 128).to(device)
+        self.Q_network = QNetwork(self.state_dim, self.action_dim, hidden1, hidden2).to(device)
+        self.Q_target = QNetwork(self.state_dim, self.action_dim, hidden1, hidden2).to(device)
 
         self.Q_target.load_state_dict(self.Q_network.state_dict())
 
-        self.optimizer = optim.AdamW(self.Q_network.parameters(), lr=LR, amsgrad=True)
+        self.optimizer = optim.AdamW(self.Q_network.parameters(), lr=self.LR, amsgrad=True)
 
-        self.replay_buffer = ReplayBuffer(REPLAY_SIZE)
+        self.replay_buffer = ReplayBuffer(self.REPLAY_SIZE)
 
+        self.N_episode = N_episode
+
+
+    def learn(self):
+        ep_rewards = []
+        ep_steps = []
+
+        total_env_steps = 0
+
+        for episode in range(N_episode):
+            state, info = env.reset()
+            '''
+            if isinstance(state, tuple):  # Gym >= 0.26 returns (obs, info)
+                state = state[0]
+            '''
+            episode_reward = 0
+            rewards_this_episode = []
+            for t in count():
+                # print(state)
+                # state = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
+                #torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
+                action = self.select_action(state)
+                next_state, reward, terminated , truncated, _ = env.step(action)
+
+
+                done = terminated or truncated
+                '''
+                if terminated:
+                    print("here")
+                    next_state = None
+                    break
+                else:
+                    next_state = torch.tensor(next_state, dtype=torch.float32, device=device).unsqueeze(0)
+                '''
+
+                # next_state = torch.tensor(next_state, dtype=torch.float32, device=device).unsqueeze(0)
+                # mask = 1 if t == env._max_episode_steps else float(not done)
+                self.replay_buffer.add(state, action, reward, next_state, done)
+                state = next_state
+
+                self.train_dqn()
+                rewards_this_episode.append(reward)
+                episode_reward += reward
+                if done:
+                    episode_durations.append(t + 1)
+                    # plot_durations()
+                    break
+            
+            ep_reward = sum(rewards_this_episode)
+            ep_length = len(rewards_this_episode)
+
+            total_env_steps += ep_length
+        
+            ep_rewards.append(ep_reward)
+            ep_steps.append(total_env_steps)
+
+            print(f"Episode {episode} | Reward: {episode_reward:.2f}")
+
+        return ep_rewards
+    
 
     def select_action(self, state, eps = 0.0):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         # state = torch.FloatTensor(state).unsqueeze(0).to(device)
         #state = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
-        global steps_done
-        eps_threshold = EPS_END + (EPS_START - EPS_END) * \
-                    math.exp(-1. * steps_done / EPS_DECAY)
-        steps_done += 1
+        eps_threshold = self.EPS_END + (self.EPS_START - self.EPS_END) * \
+                    math.exp(-1. * self.steps_done / self.EPS_DECAY)
+        self.steps_done += 1
         if not torch.is_tensor(state):
             state = torch.tensor(state, dtype=torch.float32)
         # 2 Move to device & add batch dim
@@ -164,12 +216,12 @@ class DQNAgent:
 
         return max_action.item()
 
-    def train(self):
+    def train_dqn(self):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if len(self.replay_buffer.buffer) < BATCH_SIZE:
+        if len(self.replay_buffer.buffer) < self.BATCH_SIZE:
             return
         
-        states, actions, rewards, next_states, dones = self.replay_buffer.sample(BATCH_SIZE)
+        states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.BATCH_SIZE)
         states = torch.FloatTensor(states).to(device)
         '''
         non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
@@ -201,7 +253,7 @@ class DQNAgent:
 
         
 
-        expected_q_values = Q_targets_next*GAMMA*(1 - dones) + rewards
+        expected_q_values = Q_targets_next*self.GAMMA*(1 - dones) + rewards
 
         loss_fn = nn.SmoothL1Loss()
         loss = loss_fn(Q_values, expected_q_values.squeeze(1))
@@ -214,12 +266,12 @@ class DQNAgent:
         target_net_state_dict = self.Q_target.state_dict()
         policy_net_state_dict = self.Q_network.state_dict()
         for key in policy_net_state_dict:
-            target_net_state_dict[key] = policy_net_state_dict[key]*TAU + target_net_state_dict[key]*(1-TAU)
+            target_net_state_dict[key] = policy_net_state_dict[key]*self.TAU + target_net_state_dict[key]*(1-self.TAU)
 
 
 
         for key in policy_net_state_dict:
-            target_net_state_dict[key] = policy_net_state_dict[key]*TAU + target_net_state_dict[key]*(1-TAU)
+            target_net_state_dict[key] = policy_net_state_dict[key]*self.TAU + target_net_state_dict[key]*(1-self.TAU)
         self.Q_target.load_state_dict(target_net_state_dict)
 
 
@@ -230,58 +282,3 @@ class DQNAgent:
         '''
 
 
-
-
-env = gym.make("CartPole-v1")
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-agent = DQNAgent(env)
-
-
-for episode in range(600):
-    state, info = env.reset()
-    '''
-    if isinstance(state, tuple):  # Gym >= 0.26 returns (obs, info)
-        state = state[0]
-    '''
-    episode_reward = 0
-
-    for t in count():
-        # print(state)
-        # state = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
-        #torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
-        action = agent.select_action(state)
-        next_state, reward, terminated , truncated, _ = env.step(action)
-
-
-        done = terminated or truncated
-        '''
-        if terminated:
-            print("here")
-            next_state = None
-            break
-        else:
-            next_state = torch.tensor(next_state, dtype=torch.float32, device=device).unsqueeze(0)
-        '''
-
-        # next_state = torch.tensor(next_state, dtype=torch.float32, device=device).unsqueeze(0)
-        # mask = 1 if t == env._max_episode_steps else float(not done)
-        agent.replay_buffer.add(state, action, reward, next_state, done)
-        state = next_state
-
-        agent.train()
-        
-        episode_reward += reward
-        if done:
-            episode_durations.append(t + 1)
-            plot_durations()
-            break
-
-    print(f"Episode {episode} | Reward: {episode_reward:.2f}")
-
-
-print('Complete')
-plot_durations(show_result=True)
-plt.ioff()
-plt.show()
