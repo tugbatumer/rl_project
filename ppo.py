@@ -1,26 +1,13 @@
-import gymnasium as gym
+from gymnasium.spaces import Discrete
 import numpy as np
 from tqdm import tqdm
 import torch
 from torch import nn
-from torch.optim import AdamW
-from copy import deepcopy
-from torch.utils.tensorboard import SummaryWriter
-import torch.nn.functional as F
-import random
 import torch.optim as optim
-import matplotlib
-import matplotlib.pyplot as plt
-from itertools import count
-import math 
-from torch.distributions import MultivariateNormal
-
-
+from torch.distributions import Categorical, MultivariateNormal
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
 
 
 class QNetwork(nn.Module):
@@ -44,24 +31,35 @@ class QNetwork(nn.Module):
 
 
 class PPOAGENT:
+    def __init__(self, 
+                 env, 
+                 num_episodes=500, 
+                 num_trajectories=3, 
+                 num_updates=4, 
+                 lr=0.005,
+                 hidden_size=128, 
+                 gamma=0.99, 
+                 clip=0.2):
 
-    def __init__(self, env, LR, GAMMA, N_total, N_trajectories, N_updates, CLIP):
-
-        self.N_updates = N_updates
-        self.N_total = N_total
-        self.N_trajectories = N_trajectories
-        self.GAMMA = GAMMA
+        self.N_updates = num_updates
+        self.N_episode = num_episodes
+        self.N_trajectories = num_trajectories
+        self.gamma = gamma
         self.env = env 
-        self.LR = LR
+        self.LR = lr
         self.ep_rewards = []
 
         self.env = env
         self.state_dim = env.observation_space.shape[0]
-        self.action_dim = env.action_space.shape[0]
+        self.is_discrete = isinstance(env.action_space, Discrete)
+        if self.is_discrete:
+            self.action_dim = env.action_space.n
+        else:
+            self.action_dim = env.action_space.shape[0]
 
-        self.CLIP = CLIP
-        self.actor = QNetwork(self.state_dim, self.action_dim, 128, 128)
-        self.critic = QNetwork(self.state_dim, 1, 128, 128)
+        self.clip = clip
+        self.actor = QNetwork(self.state_dim, self.action_dim, hidden_size, hidden_size)
+        self.critic = QNetwork(self.state_dim, 1, hidden_size, hidden_size)
 
         self.opt_actor = optim.AdamW(self.actor.parameters(), lr=self.LR)
         self.opt_critic = optim.AdamW(self.critic.parameters(), lr=self.LR)
@@ -69,17 +67,18 @@ class PPOAGENT:
         self.cov_var = torch.full(size=(self.action_dim,), fill_value=0.5)
         self.cov_mat = torch.diag(self.cov_var)
         self.mse = nn.MSELoss()
+        
     def learn(self):
-        t = 0
-        while t < self.N_total:
-            obs_list, act_list, log_prob_list, rtg_list, passed_time = self.train_ppo_one_iteration()
-            t += np.sum(passed_time)
+        pbar = tqdm(total=self.N_episode)
+        for ep in range(0, self.N_episode, self.N_trajectories):
+            obs_list, act_list, log_prob_list, rtg_list = self.train_ppo_one_iteration()
             V, _ = self.estimate_value(obs_list, act_list)
 
             A_k = rtg_list - V.detach()
             self.update_networks(obs_list, act_list, log_prob_list, A_k)
-            print(t)
-
+            pbar.update(self.N_trajectories)
+        
+        pbar.close()
         return self.ep_rewards
 
     def update_networks(self, obs, act, log_prob_list, A_k):
@@ -90,7 +89,7 @@ class PPOAGENT:
             
             ratio = torch.exp(log_probs - log_prob_list)
             surragate_obj1 = ratio * A_k
-            surragate_obj2 = torch.clamp(ratio, 1-self.CLIP, 1+self.CLIP) * A_k
+            surragate_obj2 = torch.clamp(ratio, 1-self.clip, 1+self.clip) * A_k
 
             actor_loss = (-torch.min(surragate_obj1, surragate_obj2)).mean()
 
@@ -110,15 +109,16 @@ class PPOAGENT:
         V = self.critic(obs).squeeze()
 
         mean = self.actor(obs)
-        dist = MultivariateNormal(mean, self.cov_mat)
+        if self.is_discrete:
+            dist = Categorical(logits=mean)
+        else:
+            dist = MultivariateNormal(mean, self.cov_mat)
+            
         log_probs = dist.log_prob(act)
-
         return V, log_probs
 
 
     def train_ppo_one_iteration(self):
-
-
         ep_steps = []
         total_env_steps = 0
 
@@ -126,18 +126,13 @@ class PPOAGENT:
         act_list = []
         rew_list = []
         log_prob_list = []
-        passed_time = []
-        trajec = 0
-        while trajec < self.N_trajectories:
+        for _ in range(self.N_trajectories):
             episode_reward = []
 
             obs, _ = self.env.reset()
             done = False
 
-            for episode in count():
-
-                trajec += 1
-
+            while True:
                 obs_list.append(obs)
                 action, log_prob = self.select_action(obs)
 
@@ -149,11 +144,9 @@ class PPOAGENT:
                 log_prob_list.append(log_prob)
                 
                 if done:
-                    # episode_durations.append(episode + 1)
                     break
 
             rew_list.append(episode_reward)
-            passed_time.append(trajec+1)
 
             ep_reward = sum(episode_reward)
             ep_length = len(episode_reward)
@@ -163,14 +156,12 @@ class PPOAGENT:
             self.ep_rewards.append(ep_reward)
             ep_steps.append(ep_length)
 
-            # print(f"Episode {episode} | Reward: {episode_reward:.2f}")
-
         obs_list = torch.tensor(obs_list, dtype=torch.float)
         act_list = torch.tensor(act_list, dtype=torch.float)
         log_prob_list = torch.tensor(log_prob_list, dtype=torch.float)
         rtg_list = self.rewards_to_go(rew_list)      
 
-        return obs_list, act_list, log_prob_list, rtg_list, passed_time
+        return obs_list, act_list, log_prob_list, rtg_list
 
     def rewards_to_go(self, rew_list):
 
@@ -182,7 +173,7 @@ class PPOAGENT:
 
             for rew in reversed(rew_ep):
 
-                discounted_reward = rew + discounted_reward*self.GAMMA
+                discounted_reward = rew + discounted_reward*self.gamma
                 rtg_list.insert(0, discounted_reward)
 
         rtg_list = torch.tensor(rtg_list, dtype=torch.float)
@@ -190,20 +181,15 @@ class PPOAGENT:
         return rtg_list
 
     def select_action(self, obs):
-
         mean = self.actor(obs)
 
-        dist = MultivariateNormal(mean, self.cov_mat)
+        if self.is_discrete:
+            dist = Categorical(logits=mean)
+        else:
+            dist = MultivariateNormal(mean, self.cov_mat)
+            
         action = dist.sample()
         log_prob = dist.log_prob(action)
 
-        return action.detach().numpy(), log_prob.detach()
-    
-
-
-
-
-
-
-        
-        
+        return (action.item(), log_prob.detach()) if self.is_discrete else \
+               (action.detach().numpy(), log_prob.detach())
