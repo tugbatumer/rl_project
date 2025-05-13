@@ -2,6 +2,7 @@ from tqdm import tqdm
 import torch
 import torch.nn.functional as F
 from torch.distributions import Normal
+from time import time
 from utils import *
 
 class GaussianPolicy(nn.Module):
@@ -45,7 +46,6 @@ class GaussianPolicy(nn.Module):
 class SACAgent:
     def __init__(self,
                  env,
-                 num_episodes=500,
                  lr=3e-4,
                  hidden_size=128,
                  gamma=0.99,
@@ -54,7 +54,6 @@ class SACAgent:
                  batch_size=128,
                  replay_size=int(1e6)):
         self.env = env
-        self.num_episodes = num_episodes
         self.lr = lr
         self.gamma = gamma
         self.tau = tau
@@ -121,9 +120,10 @@ class SACAgent:
         for target_param, param in zip(self.critic_target.parameters(), self.critic.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
-    def learn(self):
+    def learn(self, num_episodes=100000, max_training_time=float('inf')):
+        start_time = time()
         episode_rewards = []
-        for _ in tqdm(range(self.num_episodes)):
+        for _ in tqdm(range(num_episodes)):
             state = self.env.reset()
             if isinstance(state, tuple):  # Gym >= 0.26 returns (obs, info)
                 state = state[0]
@@ -143,6 +143,8 @@ class SACAgent:
                 episode_reward += reward
                 
             episode_rewards.append(episode_reward)
+            if time() - start_time > max_training_time:
+                break
 
         return episode_rewards
 

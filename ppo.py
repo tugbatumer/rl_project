@@ -4,6 +4,7 @@ from tqdm import tqdm
 import torch
 from torch import nn
 import torch.optim as optim
+from time import time
 from torch.distributions import Categorical, MultivariateNormal
 
 
@@ -33,7 +34,6 @@ class QNetwork(nn.Module):
 class PPOAGENT:
     def __init__(self, 
                  env, 
-                 num_episodes=500, 
                  num_trajectories=3, 
                  num_updates=4, 
                  lr=0.005,
@@ -42,7 +42,6 @@ class PPOAGENT:
                  clip=0.2):
 
         self.N_updates = num_updates
-        self.N_episode = num_episodes
         self.N_trajectories = num_trajectories
         self.gamma = gamma
         self.env = env 
@@ -68,17 +67,18 @@ class PPOAGENT:
         self.cov_mat = torch.diag(self.cov_var)
         self.mse = nn.MSELoss()
         
-    def learn(self):
-        pbar = tqdm(total=self.N_episode)
-        for ep in range(0, self.N_episode, self.N_trajectories):
+    def learn(self, num_episodes=100000, max_training_time=float('inf')):
+        start_time = time()
+        self.ep_rewards = []
+        for ep in tqdm(range(0, num_episodes, self.N_trajectories)):
             obs_list, act_list, log_prob_list, rtg_list = self.train_ppo_one_iteration()
             V, _ = self.estimate_value(obs_list, act_list)
 
             A_k = rtg_list - V.detach()
             self.update_networks(obs_list, act_list, log_prob_list, A_k)
-            pbar.update(self.N_trajectories)
-        
-        pbar.close()
+            if time() - start_time > max_training_time:
+                break
+            
         return self.ep_rewards
 
     def update_networks(self, obs, act, log_prob_list, A_k):
