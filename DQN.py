@@ -1,16 +1,10 @@
-import gymnasium as gym
 import numpy as np
 from tqdm import tqdm
+from time import time
 import torch
 from torch import nn
-from torch.optim import AdamW
-from copy import deepcopy
-from torch.utils.tensorboard import SummaryWriter
-import torch.nn.functional as F
 import random
 import torch.optim as optim
-import matplotlib
-import matplotlib.pyplot as plt
 from itertools import count
 import math 
 
@@ -103,25 +97,35 @@ class QNetwork(nn.Module):
 
 
 class DQNAGENT:
-    def __init__(self, env, N_episode, LR, hidden1, hidden2, GAMMA, TAU, BATCH_SIZE, EPS_START, EPS_END, EPS_DECAY, REPLAY_SIZE):
+    def __init__(self, 
+                 env, 
+                 lr=3e-4, 
+                 hidden_size=128, 
+                 gamma=0.99, 
+                 tau=0.005, 
+                 batch_size=128, 
+                 eps_start=0.9, 
+                 eps_end=0.05, 
+                 eps_decay=1000, 
+                 replay_size=int(1e6)):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.LR = LR
+        self.LR = lr
         self.steps_done = 0
-        self.REPLAY_SIZE = REPLAY_SIZE
-        self.EPS_DECAY = EPS_DECAY
-        self.EPS_END = EPS_END
-        self.EPS_START = EPS_START
-        self.BATCH_SIZE = BATCH_SIZE
-        self.TAU = TAU
-        self.GAMMA = GAMMA
+        self.REPLAY_SIZE = replay_size
+        self.EPS_DECAY = eps_decay
+        self.EPS_END = eps_end
+        self.EPS_START = eps_start
+        self.BATCH_SIZE = batch_size
+        self.TAU = tau
+        self.GAMMA = gamma
         self.env = env 
         self.state_dim = env.observation_space.shape[0]
         self.action_dim = env.action_space.n
         # self.max_action = float(env.action_space.high[0])
 
-        self.Q_network = QNetwork(self.state_dim, self.action_dim, hidden1, hidden2).to(device)
-        self.Q_target = QNetwork(self.state_dim, self.action_dim, hidden1, hidden2).to(device)
+        self.Q_network = QNetwork(self.state_dim, self.action_dim, hidden_size, hidden_size).to(device)
+        self.Q_target = QNetwork(self.state_dim, self.action_dim, hidden_size, hidden_size).to(device)
 
         self.Q_target.load_state_dict(self.Q_network.state_dict())
 
@@ -129,29 +133,26 @@ class DQNAGENT:
 
         self.replay_buffer = ReplayBuffer(self.REPLAY_SIZE)
 
-        self.N_episode = N_episode
 
-
-    def learn(self):
+    def learn(self, num_episodes=100000, max_training_time=float('inf')):
         ep_rewards = []
-        ep_steps = []
 
         total_env_steps = 0
-
-        for episode in range(N_episode):
-            state, info = env.reset()
+        start_time = time()
+        for _ in tqdm(range(num_episodes)):
+            state, _ = self.env.reset()
             '''
             if isinstance(state, tuple):  # Gym >= 0.26 returns (obs, info)
                 state = state[0]
             '''
-            episode_reward = 0
-            rewards_this_episode = []
-            for t in count():
+            ep_reward = 0
+            ep_length = 0
+            while True:
                 # print(state)
                 # state = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
                 #torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
                 action = self.select_action(state)
-                next_state, reward, terminated , truncated, _ = env.step(action)
+                next_state, reward, terminated , truncated, _ = self.env.step(action)
 
 
                 done = terminated or truncated
@@ -170,22 +171,17 @@ class DQNAGENT:
                 state = next_state
 
                 self.train_dqn()
-                rewards_this_episode.append(reward)
-                episode_reward += reward
+                ep_reward += reward
+                ep_length += 1
                 if done:
-                    episode_durations.append(t + 1)
+                    # episode_durations.append(t + 1)
                     # plot_durations()
                     break
             
-            ep_reward = sum(rewards_this_episode)
-            ep_length = len(rewards_this_episode)
-
             total_env_steps += ep_length
-        
             ep_rewards.append(ep_reward)
-            ep_steps.append(total_env_steps)
-
-            print(f"Episode {episode} | Reward: {episode_reward:.2f}")
+            if time() - start_time > max_training_time:
+                break
 
         return ep_rewards
     
@@ -280,5 +276,3 @@ class DQNAGENT:
         for target_param, param in zip(self.critic_target.parameters(), self.critic.parameters()):
             target_param.data.copy_(TAU * param.data + (1 - TAU) * target_param.data)
         '''
-
-
