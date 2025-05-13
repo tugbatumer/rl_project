@@ -1,45 +1,34 @@
+from tqdm import tqdm
 import torch
 import torch.nn.functional as F
 from utils import *
 import copy
 
 class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim, action_space=None):
+    def __init__(self, state_dim, action_dim, hidden_size, action_space=None):
         super().__init__()
-        self.mlp = mlp(state_dim)
+        self.mlp = mlp(state_dim, hidden_size)
         self.max_action = action_space.high[0]
-        self.linear = nn.Linear(256, action_dim)
+        self.linear = nn.Linear(hidden_size, action_dim)
 
     def forward(self, state):
         a = self.mlp(state)
         return self.max_action * self.linear(torch.tanh(a))
 
-
-# Critic Network
-class QNetwork(nn.Module):
-    def __init__(self, state_dim, action_dim):
-        super().__init__()
-        self.q1 = nn.Linear(256, 1)
-        self.q2 = nn.Linear(256, 1)
-        self.mlp = mlp(state_dim + action_dim)
-
-    def forward(self, state, action):
-        x = torch.cat([state, action], dim=1)
-        return self.q1(self.mlp(x)), self.q2(self.mlp(x))
-
-# SAC Agent
+# TD3 Agent
 class TD3Agent:
     def __init__(self,
                  env,
                  num_episodes=500,
                  lr=3e-4,
+                 hidden_size=128,
                  gamma=0.99,
                  tau=0.005,
                  policy_noise=0.9,
                  noise_clip=0.5,
                  policy_freq=2,
                  expl_noise=0.1,
-                 batch_size=256,
+                 batch_size=128,
                  replay_size=int(1e6)):
 
         self.env = env
@@ -59,10 +48,10 @@ class TD3Agent:
         self.action_dim = env.action_space.shape[0]
         self.max_action = float(env.action_space.high[0])
 
-        self.actor = Actor(self.state_dim, self.action_dim, env.action_space).to(self.device)
+        self.actor = Actor(self.state_dim, self.action_dim, hidden_size, env.action_space).to(self.device)
         self.actor_target = copy.deepcopy(self.actor)
 
-        self.critic = QNetwork(self.state_dim, self.action_dim).to(self.device)
+        self.critic = QNetwork(self.state_dim, self.action_dim, hidden_size).to(self.device)
         self.critic_target = copy.deepcopy(self.critic)
 
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=self.lr)
@@ -121,7 +110,7 @@ class TD3Agent:
 
     def learn(self):
         episode_rewards = []
-        for episode in range(self.num_episodes):
+        for _ in tqdm(range(self.num_episodes)):
             state = self.env.reset()
             if isinstance(state, tuple):  # Gym >= 0.26 returns (obs, info)
                 state = state[0]
@@ -143,7 +132,7 @@ class TD3Agent:
                 state = next_state
                 self.train()
                 episode_reward += reward
-                episode_rewards.append(episode_reward)
-            print(f"Episode {episode + 1}/{self.num_episodes}, Reward: {episode_reward:.2f}")
+                
+            episode_rewards.append(episode_reward)
 
         return episode_rewards

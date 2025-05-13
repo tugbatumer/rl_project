@@ -1,14 +1,15 @@
+from tqdm import tqdm
 import torch
 import torch.nn.functional as F
 from torch.distributions import Normal
 from utils import *
 
 class GaussianPolicy(nn.Module):
-    def __init__(self, state_dim, action_dim, action_space=None):
+    def __init__(self, state_dim, action_dim, hidden_size, action_space=None):
         super().__init__()
-        self.mlp = mlp(state_dim)
-        self.mu = nn.Linear(256, action_dim)
-        self.log_std = nn.Linear(256, action_dim)
+        self.mlp = mlp(state_dim, hidden_size)
+        self.mu = nn.Linear(hidden_size, action_dim)
+        self.log_std = nn.Linear(hidden_size, action_dim)
 
         # action rescaling
         if action_space is None:
@@ -40,28 +41,17 @@ class GaussianPolicy(nn.Module):
     def sample(self, state):
         return self.forward(state)
 
-# Critic Network
-class QNetwork(nn.Module):
-    def __init__(self, state_dim, action_dim):
-        super().__init__()
-        self.q1 = nn.Linear(256, 1)
-        self.q2 = nn.Linear(256, 1)
-        self.mlp = mlp(state_dim + action_dim)
-
-    def forward(self, state, action):
-        x = torch.cat([state, action], dim=1)
-        return self.q1(self.mlp(x)), self.q2(self.mlp(x))
-
 # SAC Agent
 class SACAgent:
     def __init__(self,
                  env,
                  num_episodes=500,
                  lr=3e-4,
+                 hidden_size=128,
                  gamma=0.99,
                  tau=0.005,
                  alpha=0.9,
-                 batch_size=256,
+                 batch_size=128,
                  replay_size=int(1e6)):
         self.env = env
         self.num_episodes = num_episodes
@@ -77,9 +67,9 @@ class SACAgent:
         self.action_dim = env.action_space.shape[0]
         self.max_action = float(env.action_space.high[0])
 
-        self.actor = GaussianPolicy(self.state_dim, self.action_dim, env.action_space).to(self.device)
-        self.critic = QNetwork(self.state_dim, self.action_dim).to(self.device)
-        self.critic_target = QNetwork(self.state_dim, self.action_dim).to(self.device)
+        self.actor = GaussianPolicy(self.state_dim, self.action_dim, hidden_size, env.action_space).to(self.device)
+        self.critic = QNetwork(self.state_dim, self.action_dim, hidden_size).to(self.device)
+        self.critic_target = QNetwork(self.state_dim, self.action_dim, hidden_size).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
 
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=self.lr)
@@ -133,7 +123,7 @@ class SACAgent:
 
     def learn(self):
         episode_rewards = []
-        for episode in range(self.num_episodes):
+        for _ in tqdm(range(self.num_episodes)):
             state = self.env.reset()
             if isinstance(state, tuple):  # Gym >= 0.26 returns (obs, info)
                 state = state[0]
@@ -151,8 +141,8 @@ class SACAgent:
                 state = next_state
                 self.train()
                 episode_reward += reward
-                episode_rewards.append(episode_reward)
-            print(f"Episode {episode + 1}/{self.num_episodes}, Reward: {episode_reward:.2f}")
+                
+            episode_rewards.append(episode_reward)
 
         return episode_rewards
 
