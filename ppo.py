@@ -75,13 +75,13 @@ class PPOAGENT:
             V, _ = self.estimate_value(obs_list, act_list)
 
             A_k = rtg_list - V.detach()
-            self.update_networks(obs_list, act_list, log_prob_list, A_k)
+            self.update_networks(obs_list, act_list, log_prob_list, A_k, rtg_list)
             if time() - start_time > max_training_time:
                 break
             
         return self.ep_rewards
 
-    def update_networks(self, obs, act, log_prob_list, A_k):
+    def update_networks(self, obs, act, log_prob_list, A_k, rtg_list):
 
         for _ in range(self.N_updates):
 
@@ -97,7 +97,7 @@ class PPOAGENT:
             actor_loss.backward(retain_graph = True)
             self.opt_actor.step()
 
-            critic_loss = self.mse(V, log_prob_list)
+            critic_loss = self.mse(V, rtg_list)
 
             self.opt_critic.zero_grad()
             critic_loss.backward()
