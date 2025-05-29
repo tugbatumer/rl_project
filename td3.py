@@ -24,7 +24,7 @@ class TD3Agent:
                  hidden_size=128,
                  gamma=0.99, # Discount factor
                  tau=0.005, # Soft update rate
-                 policy_noise=0.9, # Std of noise for target policy smoothing
+                 policy_noise=0.2, # Std of noise for target policy smoothing
                  noise_clip=0.5, # Clipping range for policy noise
                  policy_freq=2, # Frequency of policy (actor) update
                  expl_noise=0.1, # Std of exploration noise added to actions
