@@ -1,10 +1,10 @@
 from tqdm import tqdm
-import torch
 import torch.nn.functional as F
 from time import time
 from utils import *
 import copy
 
+# Actor Network: maps states to actions
 class Actor(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_size, action_space=None):
         super().__init__()
@@ -14,7 +14,7 @@ class Actor(nn.Module):
 
     def forward(self, state):
         a = self.mlp(state)
-        return self.max_action * self.linear(torch.tanh(a))
+        return self.max_action * self.linear(torch.tanh(a)) # Output in [-max_action, max_action]
 
 # TD3 Agent
 class TD3Agent:
@@ -22,13 +22,14 @@ class TD3Agent:
                  env,
                  lr=3e-4,
                  hidden_size=128,
-                 gamma=0.99,
-                 tau=0.005,
-                 policy_noise=0.9,
-                 noise_clip=0.5,
-                 policy_freq=2,
-                 expl_noise=0.1,
+                 gamma=0.99, # Discount factor
+                 tau=0.005, # Soft update rate
+                 policy_noise=0.9, # Std of noise for target policy smoothing
+                 noise_clip=0.5, # Clipping range for policy noise
+                 policy_freq=2, # Frequency of policy (actor) update
+                 expl_noise=0.1, # Std of exploration noise added to actions
                  batch_size=128,
+                 start_steps=0, # Steps initial random policy is used
                  replay_size=int(1e6)):
 
         self.env = env
@@ -41,6 +42,7 @@ class TD3Agent:
         self.batch_size = batch_size
         self.replay_size = replay_size
         self.expl_noise = expl_noise
+        self.start_steps = start_steps
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.state_dim = env.observation_space.shape[0]
@@ -69,9 +71,11 @@ class TD3Agent:
     def train(self):
         self.iteration += 1
 
-        if len(self.replay_buffer.buffer) < self.batch_size:
+        # Wait until enough samples are collected
+        if len(self.replay_buffer.buffer) < max(self.batch_size, self.start_steps):
             return
 
+        # Sample a batch from replay buffer
         states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
         states = torch.FloatTensor(states).to(self.device)
         actions = torch.FloatTensor(actions).to(self.device)
@@ -80,9 +84,11 @@ class TD3Agent:
         dones = torch.FloatTensor(dones).unsqueeze(1).to(self.device)
 
         with torch.no_grad():
+            # Generate target actions with added clipped noise (policy smoothing)
             noise = (torch.randn_like(actions) * float(self.policy_noise)).clamp(-float(self.noise_clip), float(self.noise_clip))
             next_actions = (self.actor_target(next_states) + noise).clamp(-self.max_action, self.max_action)
 
+            # Compute target Q-values using target critic
             target_q1, target_q2 = self.critic_target(next_states, next_actions)
             target_q = torch.min(target_q1, target_q2)
             target = rewards + (1 - dones) * self.gamma * target_q
@@ -94,6 +100,7 @@ class TD3Agent:
         critic_loss.backward()
         self.critic_opt.step()
 
+        # Delayed actor update
         if self.iteration % self.policy_freq == 0:
             actor_loss = -self.critic(states, self.actor(states))[0].mean()
 
@@ -101,6 +108,7 @@ class TD3Agent:
             actor_loss.backward()
             self.actor_opt.step()
 
+            # Soft update of target networks
             for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
@@ -110,6 +118,7 @@ class TD3Agent:
     def learn(self, num_episodes=100000, max_training_time=float('inf')):
         start_time = time()
         episode_rewards = []
+        total_steps = 0
         for _ in tqdm(range(num_episodes)):
             state = self.env.reset()
             if isinstance(state, tuple):  # Gym >= 0.26 returns (obs, info)
@@ -121,10 +130,18 @@ class TD3Agent:
 
             while not done:
                 t += 1
-                action = (
+                total_steps += 1
+                # Select action randomly during initial exploration phase
+                if total_steps < self.start_steps:
+                    action = self.env.action_space.sample()
+                # Otherwise, select action using the policy
+                else:
+                    action = (
                         self.select_action(np.array(state))
                         + np.random.normal(0, self.max_action * self.expl_noise, size=self.action_dim)
                 ).clip(-self.max_action, self.max_action)
+
+                # Take action in the environment
                 next_state, reward, done, terminate, _ = self.env.step(action)
                 done = done or terminate
                 done_bool = float(done) if t < self.env._max_episode_steps else 0
@@ -134,6 +151,7 @@ class TD3Agent:
                 episode_reward += reward
                 
             episode_rewards.append(episode_reward)
+            # Stop if training time exceeds limit
             if time() - start_time > max_training_time:
                 break
 
