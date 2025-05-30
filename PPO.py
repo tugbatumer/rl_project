@@ -82,7 +82,7 @@ class PPOAGENT:
         start_time = time()
         self.ep_rewards = []
         # Step 2: Loop starts
-        for _ in tqdm(range(0, num_episodes)):
+        for ep in tqdm(range(0, num_episodes)):
             
             # Step 3 and 4: Run old policy in environment for T timestep, and compute Rewards to go
             obs_list, act_list, log_prob_list, rtg_list = self.collect_samples_for_T_timestep()
@@ -96,6 +96,9 @@ class PPOAGENT:
             # Step 6: Compute advantage estimates, and update the policy
             self.update_networks(obs_list, act_list, log_prob_list, A_k, rtg_list)
             if time() - start_time > max_training_time:
+                break
+
+            if ep >= 300:
                 break
             
         return self.ep_rewards
@@ -120,7 +123,7 @@ class PPOAGENT:
 
             # Update using stochastic gradient ascent methods (here using descent but we are descenting the negative of the loss)
             self.opt_actor.zero_grad()
-            actor_loss.backward(retain_graph = True)
+            actor_loss.backward()
             self.opt_actor.step()
 
             # Step 7: Fit value function by regression
@@ -188,7 +191,10 @@ class PPOAGENT:
             ep_steps.append(ep_length)
 
         obs_list = torch.tensor(obs_list, dtype=torch.float).to(device)
-        act_list = torch.tensor(act_list, dtype=torch.float).to(device)
+        if self.is_discrete:
+            act_list = torch.tensor(act_list, dtype=torch.long).to(device)
+        else:
+            act_list = torch.tensor(act_list, dtype=torch.float).to(device)
         log_prob_list = torch.tensor(log_prob_list, dtype=torch.float).to(device)
 
         # Step 4: Compute rewards to go

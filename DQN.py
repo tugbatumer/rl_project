@@ -70,7 +70,8 @@ class DQNAGENT:
                  replay_size=int(1e6), # Size of the replay buffer
                  learning_start = 50, # Number of episodes to wait before updating the networks
                  train_freq = 4, # Frequency of update of the Q network
-                 target_update_freq = 1000 # HARD update frequency as in original paper, if the argument is zero then Polyak averaging is used
+                 target_update_freq = 1000, # HARD update frequency as in original paper, if the argument is zero then Polyak averaging is used
+                 is_first_update_target_hard = False
                  ): 
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -92,7 +93,7 @@ class DQNAGENT:
         self.train_freq = train_freq
         self.target_update_freq = target_update_freq
         self.CLIP_VALUE = clip_value
-
+        self.is_first_update_target_hard = is_first_update_target_hard
         # Initialize replay memory D to capacity N
         self.replay_buffer = ReplayBuffer(self.REPLAY_SIZE)
 
@@ -197,6 +198,10 @@ class DQNAGENT:
         
     def soft_update_target(self):
         # Polyak averaging for target network update
+        if self.is_first_update_target_hard:
+            self.Q_target.load_state_dict(self.Q_network.state_dict())
+            self.is_first_update_target_hard = False
+            return
         target_net_state_dict = self.Q_target.state_dict()
         policy_net_state_dict = self.Q_network.state_dict()
         for key in policy_net_state_dict:
