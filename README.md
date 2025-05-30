@@ -12,13 +12,14 @@ It supports both **discrete** and **continuous** control environments from OpenA
 ## Repository Structure
 
 ```
-├── DQN.py                          # Deep Q-Network (Discrete)
-├── PPO.py                          # Proximal Policy Optimization (Discrete & Continuous)
-├── SAC.py                          # Soft Actor-Critic (Continuous)
-├── TD3.py                          # Twin Delayed DDPG (Continuous)
-├── discrete_experiments.ipynb      # Visualization notebook for discrete action spaces (PPO & DQN)
-├── continuous_experiments.ipynb    # Visualization notebook for continuous action spaces (PPO & DQN)
-├── utils.py                        # Shared utilities (ReplayBuffer, MLP, QNetwork)
+├── DQN.py                              # Deep Q-Network (Discrete)
+├── PPO.py                              # Proximal Policy Optimization (Discrete & Continuous)
+├── SAC.py                              # Soft Actor-Critic (Continuous)
+├── TD3.py                              # Twin Delayed DDPG (Continuous)
+├── DQN_experiments.ipynb               # Visualization notebook for discrete action spaces (DQN)
+├── DQN_vs_PPO_discretE.ipynb           # Visualization notebook for discrete action spaces (DQN & PPO)
+├── continuous_experiments.ipynb        # Visualization notebook for continuous action spaces (TD3 & SAC & PPO)
+├── utils.py                            # Shared utilities (ReplayBuffer, MLP, QNetwork)
 ```
 ---
 
