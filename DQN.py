@@ -8,48 +8,6 @@ import torch.optim as optim
 from itertools import count
 import math 
 
-'''
-episode_durations = []
-
-is_ipython = 'inline' in matplotlib.get_backend()
-if is_ipython:
-    from IPython import display
-
-# plt.ion()
-
-def plot_durations(show_result=False):
-    plt.figure(1)
-    durations_t = torch.tensor(episode_durations, dtype=torch.float)
-    if show_result:
-        plt.title('Result')
-    else:
-        plt.clf()
-        plt.title('Training...')
-    plt.xlabel('Episode')
-    plt.ylabel('Duration')
-    plt.plot(durations_t.numpy())
-    # Take 100 episode averages and plot them too
-    if len(durations_t) >= 100:
-        means = durations_t.unfold(0, 100, 1).mean(1).view(-1)
-        means = torch.cat((torch.zeros(99), means))
-        plt.plot(means.numpy())
-
-    plt.pause(0.001)  # pause a bit so that plots are updated
-    if is_ipython:
-        if not show_result:
-            display.display(plt.gcf())
-            display.clear_output(wait=True)
-        else:
-            display.display(plt.gcf())
-
-'''
-
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-
-
 class ReplayBuffer:
     def __init__(self, max_size):
         self.buffer   = []
@@ -82,6 +40,7 @@ class QNetwork(nn.Module):
     def __init__(self, state_size, action_size, hl1, hl2):
         super(QNetwork, self).__init__()
         
+        # 2 Layer MLP instead of CNN since input is not image as in original paper
         self.model = nn.Sequential(
             nn.Linear(state_size, hl1),
             nn.ReLU(),
@@ -98,18 +57,25 @@ class QNetwork(nn.Module):
 
 class DQNAGENT:
     def __init__(self, 
-                 env, 
-                 lr=3e-4, 
-                 hidden_size=128, 
-                 gamma=0.99, 
-                 tau=0.005, 
-                 batch_size=128, 
-                 eps_start=0.9, 
-                 eps_end=0.05, 
-                 eps_decay=1000, 
-                 replay_size=int(1e6)):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+                 env, # Discrete Environment
+                 lr=3e-4, # Learning Rate
+                 hidden_size=128,  # Model size
+                 gamma=0.99,  # Discount factor
+                 tau=0.005, # Polyak averaging value 
+                 clip_value = 1, # Gradient Clipping Value  
+                 batch_size=128, # Number of sampled transition in every update
+                 eps_start=0.9,  # eps greedy start value
+                 eps_end=0.05, # eps greedy end value
+                 eps_decay=1000, # eps greedy decay parameter
+                 replay_size=int(1e6), # Size of the replay buffer
+                 learning_start = 50, # Number of episodes to wait before updating the networks
+                 train_freq = 4, # Frequency of update of the Q network
+                 target_update_freq = 1000 # HARD update frequency as in original paper, if the argument is zero then Polyak averaging is used
+                 ): 
+        
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Initialize hyperparameters
         self.LR = lr
         self.steps_done = 0
         self.REPLAY_SIZE = replay_size
@@ -122,157 +88,154 @@ class DQNAGENT:
         self.env = env 
         self.state_dim = env.observation_space.shape[0]
         self.action_dim = env.action_space.n
-        # self.max_action = float(env.action_space.high[0])
+        self.learning_start = learning_start
+        self.train_freq = train_freq
+        self.target_update_freq = target_update_freq
+        self.CLIP_VALUE = clip_value
 
-        self.Q_network = QNetwork(self.state_dim, self.action_dim, hidden_size, hidden_size).to(device)
-        self.Q_target = QNetwork(self.state_dim, self.action_dim, hidden_size, hidden_size).to(device)
-
-        self.Q_target.load_state_dict(self.Q_network.state_dict())
-
-        self.optimizer = optim.AdamW(self.Q_network.parameters(), lr=self.LR, amsgrad=True)
-
+        # Initialize replay memory D to capacity N
         self.replay_buffer = ReplayBuffer(self.REPLAY_SIZE)
 
+        # Initialize action-value function Q with random weights
+        self.Q_network = QNetwork(self.state_dim, self.action_dim, hidden_size, hidden_size).to(self.device)
+        self.Q_target = QNetwork(self.state_dim, self.action_dim, hidden_size, hidden_size).to(self.device)
+        self.Q_target.load_state_dict(self.Q_network.state_dict())
+
+        self.optimizer = optim.Adam(self.Q_network.parameters(), lr=self.LR)
 
     def learn(self, num_episodes=100000, max_training_time=float('inf')):
+        self.env_steps   = 0
+        self.learn_steps = 0
+        start = time()
         ep_rewards = []
 
-        total_env_steps = 0
-        start_time = time()
-        for _ in tqdm(range(num_episodes)):
+        # for episode = 1, M do
+        for ep in tqdm(range(num_episodes)):
+
+            # Initialize environment
             state, _ = self.env.reset()
-            '''
-            if isinstance(state, tuple):  # Gym >= 0.26 returns (obs, info)
-                state = state[0]
-            '''
-            ep_reward = 0
-            ep_length = 0
+            total_r = 0
+
+
             while True:
-                # print(state)
-                # state = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
-                #torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
+
+                # Select action based on eps-greedy policy
                 action = self.select_action(state)
-                next_state, reward, terminated , truncated, _ = self.env.step(action)
 
-
-                done = terminated or truncated
-                '''
-                if terminated:
-                    print("here")
-                    next_state = None
-                    break
-                else:
-                    next_state = torch.tensor(next_state, dtype=torch.float32, device=device).unsqueeze(0)
-                '''
-
-                # next_state = torch.tensor(next_state, dtype=torch.float32, device=device).unsqueeze(0)
-                # mask = 1 if t == env._max_episode_steps else float(not done)
+                # Execute action in environment and observe reward and next state
+                next_state, reward, term, trunc, _ = self.env.step(action)
+                done = term or trunc
+    
+                # Store transition in replay memory
                 self.replay_buffer.add(state, action, reward, next_state, done)
+
+                # Set state as next state
                 state = next_state
+                total_r += reward
+                '''
+                To have more samples from the environment, 
+                wait to fill the replay memory a bit more than BATCH_SIZE 
+                and sample from the environment, we added a learning_start parameter.
 
-                self.train_dqn()
-                ep_reward += reward
-                ep_length += 1
-                if done:
-                    # episode_durations.append(t + 1)
-                    # plot_durations()
+                And also tried to update the network not in every step but in some frequency.
+                '''
+
+                self.env_steps += 1
+                if self.env_steps > self.learning_start and self.env_steps % self.train_freq == 0:
+                    self.train_dqn()            
+                    self.learn_steps += 1
+    
+                    # HARD target update as in original paper 
+                    if self.target_update_freq==0:
+                        self.soft_update_target()
+                    elif self.learn_steps % self.target_update_freq == 0:
+                        self.hard_update_target()
+    
+                if done or (time() - start) > max_training_time:
+                    ep_rewards.append(total_r)
                     break
-            
-            total_env_steps += ep_length
-            ep_rewards.append(ep_reward)
-            if time() - start_time > max_training_time:
+    
+            if (time() - start) > max_training_time:
                 break
-
+    
         return ep_rewards
+
     
 
-    def select_action(self, state, eps = 0.0):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # state = torch.FloatTensor(state).unsqueeze(0).to(device)
-        #state = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
-        eps_threshold = self.EPS_END + (self.EPS_START - self.EPS_END) * \
-                    math.exp(-1. * self.steps_done / self.EPS_DECAY)
+    def select_action(self, state):
+
+        # Decrease epsilon to have control over exploration and exploitation
+        eps_threshold = self.EPS_END + (self.EPS_START - self.EPS_END) * math.exp(- self.steps_done / self.EPS_DECAY)
         self.steps_done += 1
+
+        # Check if state is Torch Tensor
         if not torch.is_tensor(state):
             state = torch.tensor(state, dtype=torch.float32)
-        # 2 Move to device & add batch dim
-        state = state.to(device).unsqueeze(0)
-        self.Q_network.eval()
-        with torch.no_grad():
-            action = self.Q_network(state)
 
-        self.Q_network.train()
+        state = state.to(self.device).unsqueeze(0)
 
-
+        # With probability epsilon select a random action
+        # Otherwise select action from action value function 
         if random.random() < eps_threshold:
             random_action = np.random.randint(self.action_dim)
             return random_action
-            
-        max_action = action.max(1).indices.view(1, 1).squeeze(0)            
+        
+
+        # Action value function to evaluation mode to freezing the gradient computation
+        self.Q_network.eval()
+        with torch.no_grad():
+            action = self.Q_network(state)
+            max_action = action.max(1).indices.view(1, 1).squeeze(0)   
+
+        self.Q_network.train()     
 
         return max_action.item()
 
+    def hard_update_target(self):
+        # HARD target network update as in original paper
+        self.Q_target.load_state_dict(self.Q_network.state_dict())
+        
+    def soft_update_target(self):
+        # Polyak averaging for target network update
+        target_net_state_dict = self.Q_target.state_dict()
+        policy_net_state_dict = self.Q_network.state_dict()
+        for key in policy_net_state_dict:
+            target_net_state_dict[key] = policy_net_state_dict[key]*self.TAU + target_net_state_dict[key]*(1-self.TAU)
+        self.Q_target.load_state_dict(target_net_state_dict)
+
     def train_dqn(self):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Wait until replay memory is filled up to BATCH_SIZE to train the networks
         if len(self.replay_buffer.buffer) < self.BATCH_SIZE:
             return
         
         states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.BATCH_SIZE)
-        states = torch.FloatTensor(states).to(device)
-        '''
-        non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
-                                          next_state)), device=device, dtype=torch.bool)
-        
-        non_final_next_states = torch.cat([s for s in next_state
-                                                if s is not None])
-        '''
-        
-        actions = torch.LongTensor(actions).to(device).unsqueeze(1)
 
-        #actions = torch.FloatTensor(actions).to(device)
-        rewards = torch.FloatTensor(rewards).unsqueeze(1).to(device)
-        next_states = torch.FloatTensor(next_states).to(device)
-        dones = torch.FloatTensor(dones).unsqueeze(1).to(device)
+        states = torch.FloatTensor(states).to(self.device)
+        actions = torch.LongTensor(actions).to(self.device).unsqueeze(1)
+        rewards = torch.FloatTensor(rewards).unsqueeze(1).to(self.device)
+        next_states = torch.FloatTensor(next_states).to(self.device)
+        dones = torch.FloatTensor(dones).unsqueeze(1).to(self.device)
 
-        
-    
-
-
-        # print(actions)
         Q_values = self.Q_network(states)
         Q_values = Q_values.gather(1, actions).squeeze(1)
 
-        # Q_targets_next = torch.zeros(BATCH_SIZE, device=device)
 
         with torch.no_grad():
             Q_targets_next = self.Q_target(next_states).detach().max(1)[0].unsqueeze(1)
 
         
-
+        # Compute y_j
         expected_q_values = Q_targets_next*self.GAMMA*(1 - dones) + rewards
 
-        loss_fn = nn.SmoothL1Loss()
+        # Calculate Loss
+        loss_fn = nn.MSELoss()
         loss = loss_fn(Q_values, expected_q_values.squeeze(1))
 
+        # Update Q function
         self.optimizer.zero_grad()
         loss.backward()
 
-        torch.nn.utils.clip_grad_value_(self.Q_network.parameters(), 100)
+        torch.nn.utils.clip_grad_value_(self.Q_network.parameters(), self.CLIP_VALUE)
         self.optimizer.step()
-        target_net_state_dict = self.Q_target.state_dict()
-        policy_net_state_dict = self.Q_network.state_dict()
-        for key in policy_net_state_dict:
-            target_net_state_dict[key] = policy_net_state_dict[key]*self.TAU + target_net_state_dict[key]*(1-self.TAU)
-
-
-
-        for key in policy_net_state_dict:
-            target_net_state_dict[key] = policy_net_state_dict[key]*self.TAU + target_net_state_dict[key]*(1-self.TAU)
-        self.Q_target.load_state_dict(target_net_state_dict)
-
-
-        '''
-        self.Q_target.load_state_dict(target_net_state_dict)
-        for target_param, param in zip(self.critic_target.parameters(), self.critic.parameters()):
-            target_param.data.copy_(TAU * param.data + (1 - TAU) * target_param.data)
-        '''
+        
