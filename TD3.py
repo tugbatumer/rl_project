@@ -14,7 +14,7 @@ class Actor(nn.Module):
 
     def forward(self, state):
         a = self.mlp(state)
-        return self.max_action * self.linear(torch.tanh(a)) # Output in [-max_action, max_action]
+        return self.max_action * torch.tanh(self.linear(a)) # Output in [-max_action, max_action]
 
 # TD3 Agent
 class TD3Agent:

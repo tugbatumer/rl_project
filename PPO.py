@@ -36,9 +36,9 @@ class QNetwork(nn.Module):
 class PPOAGENT:
     def __init__(self, 
                  env, 
-                 t_timestep=3, 
-                 num_updates=4, 
-                 lr=0.005,
+                 t_timestep=3,
+                 num_updates=4,
+                 lr=1e-3,
                  hidden_size=128, 
                  gamma=0.99, 
                  clip=0.2):
@@ -96,9 +96,6 @@ class PPOAGENT:
             # Step 6: Compute advantage estimates, and update the policy
             self.update_networks(obs_list, act_list, log_prob_list, A_k, rtg_list)
             if time() - start_time > max_training_time:
-                break
-
-            if ep >= 300:
                 break
             
         return self.ep_rewards
